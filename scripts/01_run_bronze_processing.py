@@ -14,9 +14,13 @@ import pyspark.sql.functions as F
 from pyspark.sql.functions import col
 from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
 
-import utils.data_processing_bronze_table
-import utils.data_processing_silver_table
-import utils.data_processing_gold_table
+from pathlib import Path
+import sys
+
+# Add /app/utils to PYTHONPATH automatically
+sys.path.append(str(Path(__file__).resolve().parents[1] / "utils"))
+
+import data_processing_bronze_table
 
 # To call this script: 
 # python bronze_label_store.py --snapshotdate "2023-01-01"

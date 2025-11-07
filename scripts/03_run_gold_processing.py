@@ -1,11 +1,13 @@
 """
 Gold Layer Processing Script
-Run this to process Silver → Gold (Feature Store) independently
+Run this to process Silver → Gold (Feature Store + Label Store) independently
 
 Usage:
-    python run_gold_processing.py
-    python run_gold_processing.py --start-date 2023-01-01 --end-date 2024-12-01
-    python run_gold_processing.py --single-date 2023-06-01
+    python 03_run_gold_processing.py
+    python 03_run_gold_processing.py --start-date 2023-01-01 --end-date 2024-12-01
+    python 03_run_gold_processing.py --single-date 2023-06-01
+    python 03_run_gold_processing.py --features-only
+    python 03_run_gold_processing.py --labels-only
 """
 
 import os
@@ -15,21 +17,21 @@ from datetime import datetime
 import pyspark
 import pyspark.sql.functions as F
 from pyspark.sql.functions import col
+from pathlib import Path
+import sys
 
-import utils.data_processing_gold_table
+# Add /app/utils to PYTHONPATH automatically
+sys.path.append(str(Path(__file__).resolve().parents[1] / "utils"))
+
+import gold_features_processing
+import gold_label_processing
+
+SILVER_DIR = '/app/datamart/silver/'
+GOLD_FEATURE_DIR = '/app/datamart/gold/feature_store/'
+GOLD_LABEL_DIR = '/app/datamart/gold/label_store/'
 
 
 def generate_first_of_month_dates(start_date_str, end_date_str):
-    """
-    Generate list of first-of-month dates between start and end dates
-    
-    Args:
-        start_date_str: Start date string 'YYYY-MM-DD'
-        end_date_str: End date string 'YYYY-MM-DD'
-    
-    Returns:
-        List of date strings
-    """
     start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
     end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
     
@@ -48,16 +50,6 @@ def generate_first_of_month_dates(start_date_str, end_date_str):
 
 
 def verify_silver_tables(silver_directory, table_names=None):
-    """
-    Verify that required silver tables exist
-    
-    Args:
-        silver_directory: Base silver directory
-        table_names: List of table names to check (default: all 4 tables)
-    
-    Returns:
-        dict: Status of each table
-    """
     if table_names is None:
         table_names = ['loan_daily', 'feature_clickstream', 
                       'features_attributes', 'features_financials']
@@ -107,233 +99,127 @@ def verify_silver_tables(silver_directory, table_names=None):
     return status, all_available
 
 
-def verify_gold_output(gold_directory, spark):
-    """
-    Verify and summarize gold layer output
-    
-    Args:
-        gold_directory: Gold feature store directory
-        spark: SparkSession
-    """
+def verify_gold_output(gold_feature_directory, gold_label_directory, spark):
     print("\n" + "="*80)
     print("GOLD LAYER OUTPUT SUMMARY")
     print("="*80)
     
-    parquet_files = glob.glob(os.path.join(gold_directory, "*.parquet"))
+    print("\n--- FEATURE STORE ---")
+    feature_parquet_files = glob.glob(os.path.join(gold_feature_directory, "*.parquet"))
     
-    if not parquet_files:
-        print("No parquet files found in gold layer")
+    if not feature_parquet_files:
+        print("No parquet files found in feature store")
+    else:
+        print(f"Total feature partitions: {len(feature_parquet_files)}")
+    
+    print("\n--- LABEL STORE ---")
+    label_parquet_files = glob.glob(os.path.join(gold_label_directory, "*.parquet"))
+    
+    if not label_parquet_files:
+        print("No parquet files found in label store")
+    else:
+        print(f"Total label partitions: {len(label_parquet_files)}")
+    
+    if not feature_parquet_files or not label_parquet_files:
         return
     
-    print(f"\nTotal partitions created: {len(parquet_files)}")
-    print(f"\nPartitions:")
-    for f in sorted(parquet_files):
-        print(f"  - {os.path.basename(f)}")
-    
-    # Load and analyze
     try:
-        df = spark.read.parquet(*parquet_files)
+        features_df = spark.read.parquet(*feature_parquet_files)
         
         print(f"\n{'='*80}")
         print("FEATURE STORE STATISTICS")
         print("="*80)
-        print(f"Total applications: {df.count():,}")
-        print(f"Total features: {len(df.columns)}")
-        print(f"Unique customers: {df.select('Customer_ID').distinct().count():,}")
+        print(f"Total applications: {features_df.count():,}")
+        print(f"Total features: {len(features_df.columns)}")
+        print(f"Unique customers: {features_df.select('Customer_ID').distinct().count():,}")
         
-        # Date range
-        date_stats = df.agg(
+        date_stats = features_df.agg(
             F.min("application_date").alias("min_date"),
             F.max("application_date").alias("max_date")
         ).collect()[0]
         print(f"Application date range: {date_stats['min_date']} to {date_stats['max_date']}")
         
-        # Default rate
-        if "default_label" in df.columns:
-            default_count = df.filter(col("default_label") == 1).count()
-            total_count = df.count()
+    except Exception as e:
+        print(f"\n✗ Error analyzing feature store: {str(e)}")
+    
+    try:
+        labels_df = spark.read.parquet(*label_parquet_files)
+        
+        print(f"\n{'='*80}")
+        print("LABEL STORE STATISTICS")
+        print("="*80)
+        print(f"Total labels: {labels_df.count():,}")
+        
+        if "default_label" in labels_df.columns:
+            default_count = labels_df.filter(col("default_label") == 1).count()
+            total_count = labels_df.count()
             default_rate = (default_count / total_count * 100) if total_count > 0 else 0
-            print(f"\nDefault rate: {default_rate:.2f}% ({default_count:,}/{total_count:,})")
-        
-        # Feature categories
-        print(f"\n{'='*80}")
-        print("FEATURE CATEGORIES")
-        print("="*80)
-        
-        feature_categories = {
-            'Identity': ['loan_id', 'Customer_ID'],
-            'Dates': ['application_date', 'snapshot_date'],
-            'Loan Info': ['loan_amt', 'tenure', 'requested_amount', 'requested_tenure'],
-            'Capacity': ['DTI', 'log_Annual_Income', 'income_band', 'Annual_Income', 'Outstanding_Debt'],
-            'Credit Depth': ['Credit_History_Age_Year', 'Credit_History_Age_Month', 'Num_of_Loan_active'],
-            'Delinquency': ['Num_of_Delayed_Payment_3m', 'Num_of_Delayed_Payment_6m', 
-                          'Num_of_Delayed_Payment_12m', 'ever_30dpd_prior', 'max_dpd_prior'],
-            'Demographics': ['Age', 'age_band', 'Occupation'],
-            'Application': ['estimated_EMI', 'EMI_to_income'],
-            'Labels': ['default_label']
-        }
-        
-        for category, features in feature_categories.items():
-            available = [f for f in features if f in df.columns]
-            if available:
-                print(f"\n{category}: {len(available)} features")
-                for f in available[:5]:  # Show first 5
-                    print(f"  - {f}")
-                if len(available) > 5:
-                    print(f"  ... and {len(available) - 5} more")
-        
-        # Clickstream features
-        clickstream_features = [c for c in df.columns if c.startswith('fe_')]
-        if clickstream_features:
-            print(f"\nClickstream: {len(clickstream_features)} features")
-            print(f"  - {clickstream_features[0]} ... {clickstream_features[-1]}")
-        
-        # Behavioral features
-        payment_features = [c for c in df.columns if 'Payment_Behaviour' in c]
-        credit_mix_features = [c for c in df.columns if 'Credit_Mix' in c]
-        loan_type_features = [c for c in df.columns if 'Type_of_Loan' in c]
-        
-        if payment_features or credit_mix_features or loan_type_features:
-            print(f"\nBehavioral (one-hot encoded):")
-            if payment_features:
-                print(f"  - Payment Behaviour: {len(payment_features)} categories")
-            if credit_mix_features:
-                print(f"  - Credit Mix: {len(credit_mix_features)} categories")
-            if loan_type_features:
-                print(f"  - Loan Types: {len(loan_type_features)} types")
-        
-        # Sample data
-        print(f"\n{'='*80}")
-        print("SAMPLE DATA (First 5 rows)")
-        print("="*80)
-        
-        key_columns = ['loan_id', 'Customer_ID', 'application_date', 'loan_amt', 
-                      'Age', 'Annual_Income', 'DTI', 'default_label']
-        available_key_cols = [c for c in key_columns if c in df.columns]
-        
-        df.select(*available_key_cols).show(5, truncate=False)
-        
-        # Feature completeness
-        print(f"\n{'='*80}")
-        print("FEATURE COMPLETENESS (Top 10 with nulls)")
-        print("="*80)
-        
-        null_counts = []
-        for column in df.columns:
-            null_count = df.filter(col(column).isNull()).count()
-            if null_count > 0:
-                null_pct = (null_count / total_count) * 100
-                null_counts.append((column, null_count, null_pct))
-        
-        null_counts.sort(key=lambda x: x[2], reverse=True)
-        
-        if null_counts:
-            for col_name, count, pct in null_counts[:10]:
-                print(f"  {col_name}: {pct:.1f}% ({count:,} nulls)")
-        else:
-            print("  All features are complete (no nulls)")
+            print(f"Default rate: {default_rate:.2f}% ({default_count:,}/{total_count:,})")
         
     except Exception as e:
-        print(f"\n✗ Error analyzing gold output: {str(e)}")
+        print(f"\n✗ Error analyzing label store: {str(e)}")
 
 
 def main():
-    """Main execution function"""
-    
-    # Parse command line arguments
-    parser = argparse.ArgumentParser(
-        description='Process Silver → Gold layer for loan default prediction'
-    )
-    parser.add_argument(
-        '--start-date',
-        type=str,
-        default='2023-01-01',
-        help='Start date (YYYY-MM-DD) for batch processing'
-    )
-    parser.add_argument(
-        '--end-date',
-        type=str,
-        default='2024-12-01',
-        help='End date (YYYY-MM-DD) for batch processing'
-    )
-    parser.add_argument(
-        '--single-date',
-        type=str,
-        default=None,
-        help='Process single date only (YYYY-MM-DD)'
-    )
-    parser.add_argument(
-        '--silver-dir',
-        type=str,
-        default='/app/datamart/silver/',
-        help='Silver layer base directory'
-    )
-    parser.add_argument(
-        '--gold-dir',
-        type=str,
-        default='/app/datamart/gold/feature_store/',
-        help='Gold layer feature store directory'
-    )
-    parser.add_argument(
-        '--skip-verification',
-        action='store_true',
-        help='Skip silver layer verification'
-    )
+    parser = argparse.ArgumentParser(description='Process Silver → Gold layer')
+    parser.add_argument('--start-date', type=str, default='2023-01-01')
+    parser.add_argument('--end-date', type=str, default='2024-12-01')
+    parser.add_argument('--single-date', type=str, default=None)
+    parser.add_argument('--skip-verification', action='store_true')
+    parser.add_argument('--features-only', action='store_true')
+    parser.add_argument('--labels-only', action='store_true')
     
     args = parser.parse_args()
     
-    # Print configuration
     print("\n" + "="*80)
     print("GOLD LAYER PROCESSING - CONFIGURATION")
     print("="*80)
-    print(f"Silver directory: {args.silver_dir}")
-    print(f"Gold directory: {args.gold_dir}")
+    print(f"Silver directory: {SILVER_DIR}")
+    print(f"Gold feature directory: {GOLD_FEATURE_DIR}")
+    print(f"Gold label directory: {GOLD_LABEL_DIR}")
     
     if args.single_date:
         dates_to_process = [args.single_date]
-        print(f"Mode: Single date processing")
-        print(f"Date: {args.single_date}")
+        print(f"Mode: Single date ({args.single_date})")
     else:
         dates_to_process = generate_first_of_month_dates(args.start_date, args.end_date)
-        print(f"Mode: Batch processing")
-        print(f"Date range: {args.start_date} to {args.end_date}")
-        print(f"Total dates: {len(dates_to_process)}")
+        print(f"Mode: Batch ({args.start_date} to {args.end_date}, {len(dates_to_process)} dates)")
+    
+    if args.features_only:
+        print("Processing: Features only")
+    elif args.labels_only:
+        print("Processing: Labels only")
+    else:
+        print("Processing: Both features and labels")
     
     print("="*80)
     
-    # Initialize Spark
     print("\nInitializing Spark...")
-    spark = (
-    pyspark.sql.SparkSession.builder
-        .appName("dev")
-        .master("local[*]")                   # keep local mode
-        .config("spark.driver.memory", "6g")  # ↑ give the driver more heap (try 4g, 6g, 8g)
-        .config("spark.driver.maxResultSize", "2g")  # protect against huge collects
-        .config("spark.sql.shuffle.partitions", "16") # fewer shuffles for local runs
+    spark = (pyspark.sql.SparkSession.builder
+        .appName("gold_processing")
+        .master("local[*]")
+        .config("spark.driver.memory", "6g")
+        .config("spark.driver.maxResultSize", "2g")
+        .config("spark.sql.shuffle.partitions", "16")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
-        # .config("spark.executor.memory", "6g")      # optional; mainly for cluster mode
-        .getOrCreate()
-)
+        .getOrCreate())
     
     spark.sparkContext.setLogLevel("ERROR")
     print("✓ Spark initialized")
     
-    # Verify silver tables exist
     if not args.skip_verification:
-        status, all_available = verify_silver_tables(args.silver_dir)
-        
+        status, all_available = verify_silver_tables(SILVER_DIR)
         if not all_available:
             response = input("\nProceed anyway? (y/n): ")
             if response.lower() != 'y':
                 print("Exiting...")
                 return
     
-    # Create gold directory
-    if not os.path.exists(args.gold_dir):
-        os.makedirs(args.gold_dir)
-        print(f"\n✓ Created gold directory: {args.gold_dir}")
+    for directory in [GOLD_FEATURE_DIR, GOLD_LABEL_DIR]:
+        if not os.path.exists(directory):
+            os.makedirs(directory)
+            print(f"✓ Created directory: {directory}")
     
-    # Process each date
     print("\n" + "="*80)
     print("PROCESSING GOLD LAYER")
     print("="*80)
@@ -345,24 +231,26 @@ def main():
         print(f"\n[{idx}/{len(dates_to_process)}] Processing {date_str}...")
         
         try:
-            utils.data_processing_gold_table.process_gold_feature_store(
-                date_str,
-                args.silver_dir,
-                args.gold_dir,
-                spark
-            )
+            if not args.labels_only:
+                gold_features_processing.process_gold_features(
+                    date_str, SILVER_DIR, GOLD_FEATURE_DIR, spark)
+                print(f"✓ Features completed for {date_str}")
+            
+            if not args.features_only:
+                gold_label_processing.process_gold_labels(
+                    date_str, SILVER_DIR, GOLD_LABEL_DIR, spark)
+                print(f"✓ Labels completed for {date_str}")
+            
             success_count += 1
-            print(f"✓ Completed {date_str}")
             
         except Exception as e:
             print(f"✗ Failed {date_str}: {str(e)}")
             failed_dates.append((date_str, str(e)))
     
-    # Summary
     print("\n" + "="*80)
     print("PROCESSING SUMMARY")
     print("="*80)
-    print(f"Total dates processed: {len(dates_to_process)}")
+    print(f"Total dates: {len(dates_to_process)}")
     print(f"Successful: {success_count}")
     print(f"Failed: {len(failed_dates)}")
     
@@ -371,14 +259,12 @@ def main():
         for date_str, error in failed_dates:
             print(f"  - {date_str}: {error}")
     
-    # Verify output
-    verify_gold_output(args.gold_dir, spark)
+    verify_gold_output(GOLD_FEATURE_DIR, GOLD_LABEL_DIR, spark)
     
     print("\n" + "="*80)
     print("GOLD PROCESSING COMPLETED")
     print("="*80)
     
-    # Stop Spark
     spark.stop()
 
 
