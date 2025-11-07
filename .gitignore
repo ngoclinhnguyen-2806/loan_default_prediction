@@ -1,0 +1,8 @@
+
+# Guiding files
+*.pdf
+
+# Data files
+data/
+datamart/
+*.csv
