@@ -42,22 +42,29 @@ with DAG(
         task_id="run_model_prediction",      
         bash_command=(
             'cd /app/airflow/scripts && '
-            'python3 03_model_inference_mlflow.py '  
+            'python 05_model_inference.py '  
             '--snapshotdate "{{ ds }}"'
         ),
     )
 
-    # 3. 🚨 NEW: Daily Monitoring Task
+    # 3. Daily Monitoring Task
     # This script should analyze the latest features and predictions, check data drift, 
     # and calculate prediction stability metrics.
     run_daily_monitoring = BashOperator(
         task_id="run_daily_monitoring",
         bash_command=(
             'cd /app/airflow/scripts && '
-            'python3 04_monitor_metrics.py ' # The script that calculates and reports metrics
-            '--snapshotdate "{{ ds }}"'
+            'python 06_model_performance_monitoring.py ' # The script that calculates and reports metrics
         ),
     )
+
+    run_drift_monitoring = BashOperator(
+    task_id="run_drift_monitoring",
+    bash_command=(
+        'cd /app/airflow/scripts && '
+        'python 06_model_drift_monitor.py ' # The script that calculates and reports metrics
+    ),
+)
 
     pipeline_complete = EmptyOperator(
         task_id="inference_monitoring_pipeline_complete"

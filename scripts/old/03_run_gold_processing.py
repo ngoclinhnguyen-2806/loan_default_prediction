@@ -198,8 +198,8 @@ def main():
     spark = (pyspark.sql.SparkSession.builder
         .appName("gold_processing")
         .master("local[*]")
-        .config("spark.driver.memory", "6g")
-        .config("spark.driver.maxResultSize", "2g")
+        .config("spark.driver.memory", "24g")
+        .config("spark.driver.maxResultSize", "8g")
         .config("spark.sql.shuffle.partitions", "16")
         .config("spark.serializer", "org.apache.spark.serializer.KryoSerializer")
         .getOrCreate())

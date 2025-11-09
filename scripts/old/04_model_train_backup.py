@@ -24,6 +24,9 @@ from sklearn.metrics import make_scorer, f1_score, roc_auc_score
 from sklearn.datasets import make_classification
 from sklearn.model_selection import train_test_split
 
+import mlflow
+import mlflow.xgboost
+
 
 # to call this script: python model_train.py --snapshotdate "2024-09-01"
 
@@ -196,6 +199,33 @@ def main(snapshotdate):
     print("Test GINI score: ", round(2*test_auc_score-1,3))
     print("OOT GINI score: ", round(2*oot_auc_score-1,3))
     
+    # --- MLflow tracking ---
+    mlflow.set_experiment("credit_model_training")
+    
+    with mlflow.start_run(run_name=f"run_{config['model_train_date_str']}"):
+        # Log parameters
+        mlflow.log_params(random_search.best_params_)
+        mlflow.log_param("train_test_ratio", config["train_test_ratio"])
+        mlflow.log_param("train_test_period_months", config["train_test_period_months"])
+        mlflow.log_param("oot_period_months", config["oot_period_months"])
+        
+        # Log metrics
+        mlflow.log_metric("train_auc", train_auc_score)
+        mlflow.log_metric("test_auc", test_auc_score)
+        mlflow.log_metric("oot_auc", oot_auc_score)
+        mlflow.log_metric("train_gini", 2*train_auc_score-1)
+        mlflow.log_metric("test_gini", 2*test_auc_score-1)
+        mlflow.log_metric("oot_gini", 2*oot_auc_score-1)
+        
+        # Log dataset sizes
+        mlflow.log_metric("train_samples", X_train.shape[0])
+        mlflow.log_metric("test_samples", X_test.shape[0])
+        mlflow.log_metric("oot_samples", X_oot.shape[0])
+        
+        # Log model
+        mlflow.xgboost.log_model(best_model, "model")
+        
+        print("MLflow tracking completed")
     
     # --- prepare model artefact to save ---
     model_artefact = {}

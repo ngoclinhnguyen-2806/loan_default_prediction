@@ -73,6 +73,13 @@ def compute_labels(apps_df, loan_df, dpd_threshold=30, mob_threshold=0):
             how="left"
         ).fillna({"default_label": 0})
         
+        # Deduplicate by loan_id: if any record has default_label=1, the loan is considered defaulted
+        labels_df = labels_df.groupBy("loan_id", "Customer_ID", "application_date") \
+                             .agg(F.sum("default_label").alias("default_sum")) \
+                             .withColumn("default_label", 
+                                       F.when(col("default_sum") > 0, 1).otherwise(0)) \
+                             .select("loan_id", "Customer_ID", "application_date", "default_label")
+        
         default_count = labels_df.filter(col("default_label") == 1).count()
         total_count = labels_df.count()
         default_rate = (default_count / total_count * 100) if total_count > 0 else 0
