@@ -150,7 +150,7 @@ print("row_count:",features_store_sdf.count())
 
 features_store_sdf.show(1)
 
-for snapshot_date in ['2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01', '2025-01-01']:
+for snapshot_date in ['2024-07-01' ,'2024-08-01', '2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01', '2025-01-01']:
     
     config["snapshot_date_str"] = snapshot_date
     config["snapshot_date"] = datetime.strptime(config["snapshot_date_str"], "%Y-%m-%d")

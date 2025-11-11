@@ -45,7 +45,7 @@ spark.sparkContext.setLogLevel("ERROR")
 prediction_dir = "/app/datamart/gold/model_predictions/LR/"
 inference_data = None
 
-for snapshot_date_str in ['2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01', '2025-01-01']:
+for snapshot_date_str in ['2024-07-01' ,'2024-08-01', '2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01', '2025-01-01']:
     partition_name = f"predictions_{snapshot_date_str.replace('-', '_')}.csv"
     filepath = prediction_dir + partition_name
     df = spark.read.csv(filepath, header=True, inferSchema=True)
