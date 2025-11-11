@@ -57,6 +57,7 @@ services:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
+      - ./mlflow_data:/mlflow
     ports:
       - "8080:8080"
     command: webserver
@@ -84,6 +85,7 @@ services:
       - ./dags:/opt/airflow/dags
       - ./logs:/opt/airflow/logs
       - ./plugins:/opt/airflow/plugins
+      - ./mlflow_data:/mlflow
     command: scheduler
 
   mlflow:
@@ -92,14 +94,8 @@ services:
     ports:
       - "5000:5000"
     volumes:
-      - mlflow_data:/mlflow
-    command: >
-      mlflow server 
-      --host 0.0.0.0 
-      --port 5000
-      --backend-store-uri sqlite:///mlflow/mlflow.db 
-      --default-artifact-root /mlflow/mlruns
-      --allowed-hosts "*"
+      - ./mlflow_data:/mlflow
+    command: sh -c "chmod -R 777 /mlflow/mlruns 2>/dev/null || true && mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri sqlite:///mlflow/mlflow.db --default-artifact-root /mlflow/mlruns --allowed-hosts '*'"
 
 volumes:
   airflow_data:

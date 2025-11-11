@@ -26,152 +26,197 @@ from sklearn.model_selection import train_test_split
 
 import mlflow
 import mlflow.xgboost
+from mlflow.tracking import MlflowClient
 
 
-# to call this script: python model_train.py --snapshotdate "2024-09-01"
+# Initialize SparkSession
+spark = pyspark.sql.SparkSession.builder \
+    .appName("BuildInference") \
+    .master("local[*]") \
+    .config("spark.driver.memory", "8g") \
+    .config("spark.executor.memory", "8g") \
+    .getOrCreate()
 
-def main(snapshotdate, modelname):
-    print('\n\n---starting job---\n\n')
-    
-    # Initialize SparkSession
-    spark = pyspark.sql.SparkSession.builder \
-        .appName("dev") \
-        .master("local[*]") \
-        .getOrCreate()
-    
-    # Set log level to ERROR to hide warnings
-    spark.sparkContext.setLogLevel("ERROR")
+# Set log level to ERROR to hide warnings
+spark.sparkContext.setLogLevel("ERROR")
 
-    
-    # --- set up config ---
-    config = {}
-    config["snapshot_date_str"] = snapshotdate
-    config["snapshot_date"] = datetime.strptime(config["snapshot_date_str"], "%Y-%m-%d")
-    config["model_name"] = modelname
-    config["model_bank_directory"] = "model_bank/"
-    config["model_artefact_filepath"] = config["model_bank_directory"] + config["model_name"]
-    
-    pprint.pprint(config)
-    
+# --- set up config ---
+config = {}
+config["snapshot_date_str"] = "2024-09-01"
+config["snapshot_date"] = datetime.strptime(config["snapshot_date_str"], "%Y-%m-%d")
+config["model_name"] = "LR"
 
-    # --- load model artefact from model bank or MLflow ---
-    model_artefact = None
-    model = None
-    transformer_stdscaler = None
-    
-    # Try loading from MLflow first
+#---------------------------------------------------
+# LOAD MODEL
+#---------------------------------------------------
+
+def load_model(model_name="credit_model_LR_3", snapshot_date_str="2024-08-01", fallback_dir="/app/airflow/model_bank/"):
+    """
+    Load model from MLflow Registry or fallback to pickle file.
+
+    Args:
+        model_name: Name of the model in MLflow Registry
+        snapshot_date: Snapshot date string (e.g., "2024-08-01") for pickle fallback
+        fallback_dir: Directory containing pickle files
+
+    Returns:
+        Loaded model object
+    """
+    snapshot_date = snapshot_date_str.replace("-", "_")
+
+    # Try loading from MLflow Registry
     try:
-        # Extract run name from model name (assumes format: credit_model_YYYY_MM_DD.pkl)
-        date_part = config["model_name"].replace("credit_model_", "").replace(".pkl", "").replace("_", "-")
-        run_name = f"run_{date_part}"
-        
-        # Search for the run
-        experiment = mlflow.get_experiment_by_name("credit_model_training")
-        if experiment:
-            runs = mlflow.search_runs(
-                experiment_ids=[experiment.experiment_id],
-                filter_string=f"tags.mlflow.runName = '{run_name}'"
-            )
-            
-            if not runs.empty:
-                run_id = runs.iloc[0]['run_id']
-                model_uri = f"runs:/{run_id}/model"
-                model = mlflow.xgboost.load_model(model_uri)
-                
-                # Load scaler from pickle (MLflow doesn't store preprocessing transformers)
-                with open(config["model_artefact_filepath"], 'rb') as file:
-                    model_artefact = pickle.load(file)
-                transformer_stdscaler = model_artefact["preprocessing_transformers"]["stdscaler"]
-                
-                print(f"Model loaded from MLflow! Run ID: {run_id}")
-            else:
-                raise Exception("Run not found in MLflow")
-        else:
-            raise Exception("Experiment not found in MLflow")
-            
+        mlflow.set_tracking_uri("http://mlflow:5000")
+        print(f"🔍 Attempting to load model from MLflow Registry: {model_name}")
+
+        model = mlflow.sklearn.load_model(f"models:/{model_name}/latest")
+        print(f"✅ Successfully loaded model from MLflow Registry")
+
+        # Try to load scaler artifact if needed
+        try:
+            client = MlflowClient()
+            versions = client.search_model_versions(f"name='{model_name}'")
+            if versions:
+                latest_version = versions[0]
+                run_id = latest_version.run_id
+                scaler_path = mlflow.artifacts.download_artifacts(
+                    run_id=run_id, 
+                    artifact_path="preprocessing/temp_scaler.pkl"
+                )
+                with open(scaler_path, 'rb') as f:
+                    scaler = pickle.load(f)
+                print(f"✅ Successfully loaded scaler from MLflow")
+                return model, scaler
+        except Exception as e:
+            print(f"⚠️  Could not load scaler from MLflow: {e}")
+            return model, None
+
+        return model, None
+
     except Exception as e:
-        print(f"MLflow loading failed: {str(e)}")
-        print("Falling back to pickle file...")
-        
-        # Fall back to pickle file
-        with open(config["model_artefact_filepath"], 'rb') as file:
-            model_artefact = pickle.load(file)
-        
-        model = model_artefact["model"]
-        transformer_stdscaler = model_artefact["preprocessing_transformers"]["stdscaler"]
-        
-        print("Model loaded from pickle file! " + config["model_artefact_filepath"])
+        print(f"❌ Failed to load from MLflow Registry: {e}")
+
+        # Fallback to pickle file
+        pickle_filename = f"credit_model_LR_{snapshot_date}.pkl"
+        pickle_path = f"{fallback_dir}{pickle_filename}"
+
+        try:
+            print(f"🔍 Attempting to load from pickle: {pickle_path}")
+            with open(pickle_path, 'rb') as f:
+                model_data = pickle.load(f)
+
+            # Handle different pickle formats
+            if isinstance(model_data, dict):
+                model = model_data.get('model')
+                scaler = model_data.get('scaler')
+                print(f"✅ Successfully loaded model and scaler from pickle (dict format)")
+            elif isinstance(model_data, tuple):
+                model, scaler = model_data
+                print(f"✅ Successfully loaded model and scaler from pickle (tuple format)")
+            else:
+                model = model_data
+                scaler = None
+                print(f"✅ Successfully loaded model from pickle (single object)")
+
+            return model, scaler
+
+        except FileNotFoundError:
+            print(f"❌ Pickle file not found: {pickle_path}")
+            raise Exception(f"Could not load model from MLflow or pickle file: {pickle_path}")
+        except Exception as e:
+            print(f"❌ Failed to load from pickle: {e}")
+            raise
 
 
-    # --- load feature store ---
-    FEATURE_DIR = "/app/datamart/gold/feature_store"
-    features_store_sdf = spark.read.parquet(FEATURE_DIR)
-    print("row_count:",features_store_sdf.count())
+if __name__ == "__main__":
+    # Try to load model
+    model, scaler = load_model(
+        model_name="credit_model_LR_3",
+        snapshot_date_str="2024-08-01",
+        fallback_dir="/app/airflow/model_bank/"
+    )
+
+    print(f"\nModel type: {type(model).__name__}")
+    if scaler:
+        print(f"Scaler type: {type(scaler).__name__}")
+
+#---------------------------------------------------
+# LOAD FEATURE STORE
+#---------------------------------------------------
+
+FEATURE_DIR = "/app/datamart/gold/feature_store"
+features_store_sdf = spark.read.parquet(FEATURE_DIR)
+print("row_count:",features_store_sdf.count())
+
+features_store_sdf.show(1)
+
+for snapshot_date in ['2024-09-01', '2024-10-01', '2024-11-01', '2024-12-01', '2025-01-01']:
     
-    features_store_sdf.show(5)
+    config["snapshot_date_str"] = snapshot_date
+    config["snapshot_date"] = datetime.strptime(config["snapshot_date_str"], "%Y-%m-%d")
     
+    try:
+        features_sdf = features_store_sdf.filter((col("snapshot_date") == config["snapshot_date"]))
+    except Exception as e:
+        print(f"⚠️ Using application_date instead of snapshot_date due to: {e}")
+        features_sdf = features_store_sdf.filter((col("application_date") == config["snapshot_date"]))
     
-    # extract feature store
-    features_sdf = features_store_sdf.filter((col("snapshot_date") == config["snapshot_date"]))
     print("extracted features_sdf", features_sdf.count(), config["snapshot_date"])
     
     features_pdf = features_sdf.toPandas()
-
-
-    # --- preprocess data for modeling ---
+    
+    #---------------------------------------------------
+    # PREPROCESS DATA
+    #---------------------------------------------------
+    
     # prepare X_inference
-    feature_cols = [fe_col for fe_col in features_pdf.columns if fe_col.startswith('fe_')]
-    X_inference = features_pdf[feature_cols]
+    feature_cols = [fe_col for fe_col in features_pdf.columns if fe_col not in ['Customer_ID', 'application_date', 'snapshot_date']]
+    X_features = features_pdf[feature_cols]
     
-    # apply transformer - standard scaler
-    X_inference = transformer_stdscaler.transform(X_inference)
+    X_features.head()
     
-    print('X_inference', X_inference.shape[0])
-
-
-    # --- model prediction inference ---
-    # load model
-    # model = model_artefact["model"]
+    # Apply scaler if it exists
+    if scaler is not None:
+        print("🔄 Applying scaler transformation...")
+        X_scaled = scaler.transform(X_features)
+        print(f"✅ Features scaled: {X_features.shape} -> {X_scaled.shape}")
+    else:
+        print("⚠️  No scaler found, using raw")
+        # --- Scaling ---
+        X_scaled = X_features
     
-    # predict model
-    y_inference = model.predict_proba(X_inference)[:, 1]
+    #---------------------------------------------------
+    # MAKE INFERENCE & PREPARE OUTPUT
+    #---------------------------------------------------
+    
+    y_inference = model.predict_proba(X_scaled)[:, 1]
+    y_inference
     
     # prepare output
     y_inference_pdf = features_pdf[["Customer_ID","snapshot_date"]].copy()
     y_inference_pdf["model_name"] = config["model_name"]
     y_inference_pdf["model_predictions"] = y_inference
     
+    #---------------------------------------------------
+    # SAVE TO GOLD LAYER
+    #---------------------------------------------------
+    
+    # create gold datalake
+    snapshot_date_path = config["snapshot_date_str"].replace('-','_')
+    model_naming = config["model_name"]
+    prediction_directory = f"/app/datamart/gold/model_predictions/{model_naming}/"
+    print(prediction_directory)
+    
+    if not os.path.exists(prediction_directory):
+        os.makedirs(prediction_directory)
+    
+    filepath = os.path.join(prediction_directory, f"predictions_{snapshot_date_path}.csv")
+    y_inference_pdf.to_csv(filepath, index=False)
 
-    # --- save model inference to datamart gold table ---
-    # create bronze datalake
-    gold_directory = f"datamart/gold/model_predictions/{config["model_name"][:-4]}/"
-    print(gold_directory)
-    
-    if not os.path.exists(gold_directory):
-        os.makedirs(gold_directory)
-    
-    # save gold table - IRL connect to database to write
-    partition_name = config["model_name"][:-4] + "_predictions_" + config["snapshot_date_str"].replace('-','_') + '.parquet'
-    filepath = gold_directory + partition_name
-    spark.createDataFrame(y_inference_pdf).write.mode("overwrite").parquet(filepath)
-    # df.toPandas().to_parquet(filepath,
-    #           compression='gzip')
-    print('saved to:', filepath)
+spark.stop()
 
-    
-    # --- end spark session --- 
-    spark.stop()
-    
-    print('\n\n---completed job---\n\n')
+print('\n\n---completed job---\n\n')
 
-
-if __name__ == "__main__":
-    # Setup argparse to parse command-line arguments
-    parser = argparse.ArgumentParser(description="run job")
-    parser.add_argument("--snapshotdate", type=str, required=True, help="YYYY-MM-DD")
-    parser.add_argument("--modelname", type=str, required=True, help="model_name")
-    
-    args = parser.parse_args()
-    
-    # Call main with arguments explicitly passed
-    main(args.snapshotdate, args.modelname)
+#---------------------------------------------------
+# END
+#---------------------------------------------------

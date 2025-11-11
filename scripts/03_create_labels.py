@@ -1,113 +1,88 @@
-"""
-CLI Usage Examples:
-  python /app/scripts/04_create_gold_labels.py all
-  python /app/scripts/04_create_gold_labels.py 2025-01-01
-  python /app/scripts/04_create_gold_labels.py range 2025-01-01 2025-03-31
-"""
-
 import os
-import sys
-from datetime import datetime
+import glob
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import random
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
+import pprint
 import pyspark
 import pyspark.sql.functions as F
+
 from pyspark.sql.functions import col
-from pyspark.sql.types import StringType, IntegerType
+from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
 
-# -------------------------------------------------------------------------
-# CONFIG
-# -------------------------------------------------------------------------
-SILVER_DIR = "/app/datamart/silver/lms_loan_daily"
-GOLD_LABEL_DIR = "/app/datamart/gold/label_store"
-DPD_THRESHOLD = 30
-MOB_THRESHOLD = 6
+import sys
+from pathlib import Path
 
-# -------------------------------------------------------------------------
-# CORE LOGIC
-# -------------------------------------------------------------------------
-def process_labels_for_snapshot(spark, snapshot_date_str, dpd=DPD_THRESHOLD, mob=MOB_THRESHOLD):
-    """Create labels for a specific snapshot_date and save to Gold label store."""
-    snapshot_date = datetime.strptime(snapshot_date_str, "%Y-%m-%d")
-    print(f"\n=== Processing snapshot_date: {snapshot_date_str} ===")
+sys.path.append(str(Path(__file__).resolve().parents[1] / "utils"))
 
-    if not os.path.exists(SILVER_DIR):
-        raise FileNotFoundError(f"❌ Silver directory not found: {SILVER_DIR}")
+import data_processing_gold_table
 
-    # 1️⃣ Load Silver data
-    df = spark.read.parquet(SILVER_DIR)
-    df = df.withColumn("snapshot_date", col("snapshot_date").cast("date"))
+# Initialize SparkSession
+spark = pyspark.sql.SparkSession.builder \
+    .appName("dev") \
+    .master("local[*]") \
+    .getOrCreate()
 
-    # 2️⃣ Filter rows for this snapshot date
-    df = df.filter(col("snapshot_date") == F.lit(snapshot_date))
-    row_count = df.count()
-    print(f"Loaded {row_count} rows for snapshot_date {snapshot_date_str}")
-    if row_count == 0:
-        print(f"⚠️ No data found for {snapshot_date_str}, skipping.")
-        return None
+# Set log level to ERROR to hide warnings
+spark.sparkContext.setLogLevel("ERROR")
 
-    # 3️⃣ Filter loans at given MOB and compute label
-    df = df.filter(col("mob") == mob)
-    df = df.withColumn("label", F.when(col("dpd") >= dpd, 1).otherwise(0).cast(IntegerType()))
-    df = df.withColumn("label_def", F.lit(f"{dpd}dpd_{mob}mob").cast(StringType()))
+# set up config
+snapshot_date_str = "2023-01-01"
 
-    # 4️⃣ Keep relevant columns
-    keep_cols = ["loan_id", "Customer_ID", "label", "label_def", "snapshot_date"]
-    df = df.select(*[c for c in keep_cols if c in df.columns])
+start_date_str = "2023-01-01"
+end_date_str = "2024-12-01"
 
-    # 5️⃣ Save to Gold
-    os.makedirs(GOLD_LABEL_DIR, exist_ok=True)
-    out_file = f"gold_label_store_{snapshot_date_str.replace('-', '_')}.parquet"
-    out_path = os.path.join(GOLD_LABEL_DIR, out_file)
+# generate list of dates to process
+def generate_first_of_month_dates(start_date_str, end_date_str):
+    # Convert the date strings to datetime objects
+    start_date = datetime.strptime(start_date_str, "%Y-%m-%d")
+    end_date = datetime.strptime(end_date_str, "%Y-%m-%d")
+    
+    # List to store the first of month dates
+    first_of_month_dates = []
 
-    df.write.mode("overwrite").parquet(out_path)
-    print(f"✅ Saved labels to {out_path} ({df.count()} rows)")
+    # Start from the first of the month of the start_date
+    current_date = datetime(start_date.year, start_date.month, 1)
 
-    return df
-
-# -------------------------------------------------------------------------
-# MAIN RUNNER
-# -------------------------------------------------------------------------
-def main():
-    spark = (
-        pyspark.sql.SparkSession.builder
-        .appName("gold_label_creation")
-        .master("local[*]")
-        .getOrCreate()
-    )
-    spark.sparkContext.setLogLevel("ERROR")
-
-    args = sys.argv[1:]
-
-    # Load all available snapshot dates
-    df_all = spark.read.parquet(SILVER_DIR)
-    dates = sorted([
-        r[0].strftime("%Y-%m-%d")
-        for r in df_all.select("snapshot_date").distinct().orderBy("snapshot_date").collect()
-    ])
-
-    if not args or args[0].lower() == "all":
-        print(f"\n=== Running label creation for ALL {len(dates)} snapshot dates ===")
-        for d in dates:
-            process_labels_for_snapshot(spark, d)
-
-    elif args[0].lower() == "range" and len(args) == 3:
-        start, end = args[1], args[2]
-        date_range = [d for d in dates if start <= d <= end]
-        if not date_range:
-            print(f"⚠️ No snapshot dates between {start} and {end}")
+    while current_date <= end_date:
+        # Append the date in yyyy-mm-dd format
+        first_of_month_dates.append(current_date.strftime("%Y-%m-%d"))
+        
+        # Move to the first of the next month
+        if current_date.month == 12:
+            current_date = datetime(current_date.year + 1, 1, 1)
         else:
-            print(f"\n=== Running label creation for range {start} → {end} ===")
-            for d in date_range:
-                process_labels_for_snapshot(spark, d)
+            current_date = datetime(current_date.year, current_date.month + 1, 1)
 
-    else:
-        snapshot_date_str = args[0]
-        if snapshot_date_str not in dates:
-            print(f"⚠️ Snapshot date {snapshot_date_str} not found in Silver data. Processing anyway.")
-        process_labels_for_snapshot(spark, snapshot_date_str)
+    return first_of_month_dates
 
-    spark.stop()
-    print("\n--- Gold Label Creation Completed ---\n")
+dates_str_lst = generate_first_of_month_dates(start_date_str, end_date_str)
+print(dates_str_lst)
 
-# -------------------------------------------------------------------------
-if __name__ == "__main__":
-    main()
+# silver datalake
+silver_loan_daily_directory = "/app/datamart/silver/loan_daily/"
+
+# create bronze datalake
+gold_label_store_directory = "/app/datamart/gold/label_store/"
+
+if not os.path.exists(gold_label_store_directory):
+    os.makedirs(gold_label_store_directory)
+
+# run gold backfill
+for date_str in dates_str_lst:
+    data_processing_gold_table.process_labels_gold_table(date_str, silver_loan_daily_directory, gold_label_store_directory, spark, dpd = 30, mob = 1)
+
+
+folder_path = gold_label_store_directory
+files_list = [folder_path+os.path.basename(f) for f in glob.glob(os.path.join(folder_path, '*'))]
+df = spark.read.option("header", "true").parquet(*files_list)
+print("row_count:",df.count())
+
+df.show()
+
+
+
+    

@@ -1,68 +1,49 @@
-"""
-Call this script: python 01_create_bronze.py
-"""
-
 import os
+import glob
+import pandas as pd
+import matplotlib.pyplot as plt
+import numpy as np
+import random
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
+import pprint
 import pyspark
-from pyspark.sql.functions import year, month, to_date
+import pyspark.sql.functions as F
+import sys
+from pyspark.sql.functions import col
+from pyspark.sql.types import StringType, IntegerType, FloatType, DateType
+from pathlib import Path
 
-# -------------------------------------------------------------------------
-# CONFIG
-# -------------------------------------------------------------------------
-SOURCE_FILES = {
-    "lms_loan_daily": "data/lms_loan_daily.csv",
-    "feature_clickstream": "data/feature_clickstream.csv",
-    "features_attributes": "data/features_attributes.csv",
-    "features_financials": "data/features_financials.csv",
-}
-BRONZE_DIR = "/app/datamart/bronze"
+sys.path.append(str(Path(__file__).resolve().parents[1] / "utils"))
+import data_processing_bronze_table
 
-# -------------------------------------------------------------------------
-# PROCESSING FUNCTION
-# -------------------------------------------------------------------------
-def process_bronze_table(spark, table):
-    csv_path = SOURCE_FILES.get(table)
-    if not csv_path or not os.path.exists(csv_path):
-        print(f"⚠️  Missing source for {table}")
-        return
+# Initialize SparkSession (local dev)
+spark = pyspark.sql.SparkSession.builder \
+    .appName("dev") \
+    .master("local[*]") \
+    .getOrCreate()
 
-    print(f"Processing {table} ...")
-    df = spark.read.csv(csv_path, header=True, inferSchema=True)
+# Reduce Spark logs to errors
+spark.sparkContext.setLogLevel("ERROR")
 
-    if "snapshot_date" not in df.columns:
-        print(f"❌ {table}: snapshot_date column missing — skipped.")
-        return
+# === Bronze layer directories ===
+bronze_lms_directory = "/app/datamart/bronze/lms_loan_daily/"
+bronze_clickstream_directory = "/app/datamart/bronze/feature_clickstream/"
+bronze_attr_directory = "/app/datamart/bronze/features_attributes/"
+bronze_fin_directory = "/app/datamart/bronze/features_financials/"
 
-    # Ensure snapshot_date is proper date type
-    df = df.withColumn("snapshot_date", to_date("snapshot_date"))
+# Ensure Bronze dirs exist
+for directory in [
+    bronze_lms_directory,
+    bronze_clickstream_directory,
+    bronze_attr_directory,
+    bronze_fin_directory
+]:
+    os.makedirs(directory, exist_ok=True)
+    print(f"Created directory (if missing): {directory}")
 
-    # Add year and month for partitioning
-    df = df.withColumn("year", year("snapshot_date")).withColumn("month", month("snapshot_date"))
-
-    out_dir = os.path.join(BRONZE_DIR, table)
-    os.makedirs(out_dir, exist_ok=True)
-
-    df.write.mode("overwrite").partitionBy("year", "month").parquet(out_dir)
-    print(f"✅ {table}: written to {out_dir}")
-
-# -------------------------------------------------------------------------
-# MAIN
-# -------------------------------------------------------------------------
-def main():
-    print("\n--- Starting Bronze Layer Processing ---\n")
-    spark = pyspark.sql.SparkSession.builder.appName("bronze_processing").master("local[*]").getOrCreate()
-    spark.sparkContext.setLogLevel("ERROR")
-    os.makedirs(BRONZE_DIR, exist_ok=True)
-
-    for table in SOURCE_FILES.keys():
-        try:
-            process_bronze_table(spark, table)
-        except Exception as e:
-            print(f"❌ Error processing {table}: {e}")
-
-    spark.stop()
-    print("\n--- Bronze Layer Processing Completed ---\n")
-
-# -------------------------------------------------------------------------
-if __name__ == "__main__":
-    main()
+# Ingest raw CSVs -> Bronze tables in CSV (split by snapshot date)
+data_processing_bronze_table.process_bronze_table("/app/data/lms_loan_daily.csv",bronze_lms_directory, spark)
+data_processing_bronze_table.process_bronze_table("/app/data/feature_clickstream.csv",bronze_clickstream_directory, spark)
+data_processing_bronze_table.process_bronze_table("/app/data/features_attributes.csv",bronze_attr_directory, spark)
+data_processing_bronze_table.process_bronze_table("/app/data/features_financials.csv",bronze_fin_directory, spark)
