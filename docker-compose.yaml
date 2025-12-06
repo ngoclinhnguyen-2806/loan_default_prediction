@@ -6,6 +6,7 @@ services:
       - "8888:8888"
     volumes:
       - .:/app
+      - ./mlflow_data:/mlflow
     environment:
       - JUPYTER_ENABLE_LAB=yes
       - MLFLOW_TRACKING_URI=http://mlflow:5000

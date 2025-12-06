@@ -305,36 +305,13 @@ process_gold_feature_store(
 
 ### Running the Full Pipeline
 
-**Process all dates (backfill):**
-```bash
-python main.py
-```
 
-This will:
-1. Generate monthly dates from 2023-01-01 to 2024-12-01
-2. Process Bronze layer for all 4 tables
-3. Process Silver layer (loan transformations + feature directories)
-4. Process Gold layer (label store + feature store directory)
-5. Verify outputs and show summary
-
-**Expected runtime:** 5-10 minutes
-
-### Running Incremental Ingestion
-
-**Process Bronze layer for a single date:**
-```bash
-# All tables
-python bronze_label_store.py --snapshotdate "2023-01-01"
-
-# Specific tables only
-python bronze_label_store.py --snapshotdate "2023-01-01" --tables "lms_loan_daily,features_clickstream"
-```
 
 ---
 
-## Output Verification
+### Output Verification
 
-After running `python main.py`, you should see:
+After running, you should see:
 
 ```
 ================================================================================
@@ -355,6 +332,7 @@ VERIFYING RESULTS
 
 ️🥇 Gold Layer Stores:
   ✓ feature_store: 
+  ✓ label_store: 
   
 ```
 
@@ -390,58 +368,7 @@ Based on correlation with default:
 
 ---
 
-## Data Quality
-
-### Validation Checks
-
-#### Bronze Layer
-- ✅ File existence validation
-- ✅ Snapshot date filtering
-- ✅ Data lineage tracking
-
-#### Silver Layer
-- ✅ Customer_ID presence and null detection
-- ✅ Schema enforcement (type consistency)
-- ✅ Deduplication (configurable grain)
-- ✅ Numeric column auto-detection
-- ✅ Float → Double upcasting for schema consistency
-- ✅ PII removal (SSN, Name)
-- ✅ Categorical value normalization
-
-#### Gold Layer
-- ✅ Point-in-time correctness (no future peeking)
-- ✅ Feature completeness analysis
-- ✅ Null percentage tracking
-- ✅ Default label validation
-- ✅ Schema consistency across partitions
-
----
-
-## Performance
-
-### Optimization Strategies
-
-1. **Partitioning:** Date-based partitions for efficient time-range queries
-2. **Parquet Format:** Columnar storage with compression (~10x smaller than CSV)
-3. **Schema Enforcement:** Strongly typed schemas prevent runtime errors
-4. **Incremental Processing:** Process only new dates
-5. **Spark Optimizations:** Broadcast joins, predicate pushdown, partition pruning
-
-### Benchmarks
-
-| Layer | Records/Month | Processing Time | Storage Size |
-|-------|---------------|-----------------|--------------|
-| Bronze (CSV) | ~10,500 | ~5s | ~5 MB |
-| Silver (Parquet) | ~10,500 | ~15s | ~500 KB |
-| Gold (Parquet) | ~530 applications | ~30s | ~200 KB |
-
-**Total pipeline runtime (24 months):** ~15-20 minutes
-
----
-
-## Troubleshooting
-
-### Common Issues
+## Troubleshooting for Common Issues
 
 #### 1. Out of Memory
 ```
@@ -462,16 +389,7 @@ spark = (
 )
 ```
 
-#### 2. File Not Found
-```
-Warning: Bronze file not found
-```
-**Solution:** Verify bronze layer was processed first
-```bash
-python main.py  # Run full pipeline
-```
-
-### Performance Tuning
+#### 2. Slow Processing / Need Performance Tuning
 
 Adjust Spark configuration:
 ```python

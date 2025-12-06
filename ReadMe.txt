@@ -1,1 +1,0 @@
-https://github.com/ngoclinhnguyen-2806/loan_default_prediction

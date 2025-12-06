@@ -200,14 +200,17 @@ def main(snapshotdate):
             mlflow.sklearn.log_model(best_model, "model")
             print("✅ Model logged successfully")
             
-            # Log scaler using temp file
-            with tempfile.NamedTemporaryFile(mode="wb", suffix=".pkl", delete=False) as f:
+            # Log scaler with a fixed filename
+            scaler_filename = "temp_scaler.pkl"
+            temp_dir = tempfile.gettempdir()
+            temp_path = os.path.join(temp_dir, scaler_filename)
+            
+            with open(temp_path, 'wb') as f:
                 pickle.dump(transformer_stdscaler, f)
-                temp_path = f.name
             
             mlflow.log_artifact(temp_path, "preprocessing")
             os.remove(temp_path)
-            print("✅ Scaler logged successfully")
+            print("✅ Scaler logged successfully as preprocessing/temp_scaler.pkl")
             
             # Register model
             run_id = mlflow.active_run().info.run_id
